@@ -19,7 +19,7 @@ class Material(object):
         """ initializing a material. This means going
         ahead and forming splines
         
-        Should pass in a vector of temperatures, followed by
+        Should pass in a vector of void fractions, followed by
         corresponding vector of diff. coefficients, sigA, nSigF,
         GTRANSXS each containing vectors of length <numgroups>"""
 
@@ -30,14 +30,14 @@ class Material(object):
         if not len(diffC)==len(sigA)==len(nSigF):
             raise Exception("Must have same group number for all GCs")
         
-        if (len(diffC),len(diffC)) != np.shape(gtrans):
-            raise Exception("Group transfer matrix has the wrong shape.")
+#        if (len(diffC),len(diffC)) != np.shape(gtrans):
+#            raise Exception("Group transfer matrix has the wrong shape.")
 
         if isinstance(diffC[0],list):
-            self.diffC = CSpline(tempvec, diffC)
-            self.sigA = CSpline(tempvec, sigA)
-            self.nSigF = CSpline(tempvec, nSigF)
-            self.gtrans = CSpline(tempvec, gtrans)
+            self.diffC = CSpline(void, diffC)
+            self.sigA = CSpline(void, sigA)
+            self.nSigF = CSpline(void, nSigF)
+            self.gtrans = CSpline(void, gtrans)
             self.Tnom = 900.0 # default to 900K
         else:
             # only one value given, use scalar value
@@ -64,17 +64,17 @@ class Material(object):
         return self.gtrans[gto][gfrom]
 
     # interpolation methods
-    def interpSigA(self, group, T): 
-        return self.sigA(T)[group]
+    def interpSigA(self, group, void): 
+        return self.sigA(void)[group]
 
-    def interpgetDiffC(self, group, T):
-        return self.diffC(T)[group]
+    def interpDiffC(self, group, void):
+        return self.diffC(void)[group]
 
-    def interpNuSigF(self, group, T):
-        return self.nSigF(T)[group]
+    def interpNuSigF(self, group, void):
+        return self.nSigF(void)[group]
 
-    def interpGroupTransXS(self, gfrom, gto, T):
-        return self.gtrans(T)[gto][gfrom]
+    def interpGroupTransXS(self, gfrom, gto, void):
+        return self.gtrans(void)[gto][gfrom]
 
 
 
@@ -164,6 +164,74 @@ def makeAMatrix(r, h, nr, nh, numgroups, geommap):
                     B[coord2enum(i, j, nr)] = 0.0
 
     return Alist, Blist
+
+
+def makeAAMatrix(r, h, nr, nh, numgroups, geommap):
+
+    Alist = [np.zeros([nr * nh, nr * nh]) for i in range(numgroups)]
+    Blist = [np.zeros(nr * nh) for i in range(numgroups)]
+    dr = r / nr
+    dz = h / nh
+
+    # make the matrix with natural boundary conditions
+    for A, B, gnum in zip(Alist, Blist, range(numgroups)):
+        for i in range(nr):
+            for j in range(nh):
+                r = i * dr
+                h = j * dz
+
+                if r != 0:
+
+                    # diffusion coeffs of neighboring cells
+                    dtop = geommap(r,h+dz/2.0).interpDiffC(gnum, getvoid) # top cell
+                    dbot = geommap(r,h-dz/2.0).interpDiffC(gnum, getvoid) # below cell
+                    dlef = geommap(r-dr/2,h).interpDiffC(gnum, getvoid) # left
+                    drigh = geommap(r+dr/2,h).interpDiffC(gnum, getvoid) # right
+                    dme = geommap(r,h).interpDiffC(gnum, getvoid) # local
+
+                    # get on-diagonal term:
+                    # (leakage+absorbtion)
+                    A[coord2enum(i, j, nr), coord2enum(i, j, nr)] = ( (r+dr/2.0) * dz / dr * 2.0 * drigh* dme / (drigh+dme) +
+                                                                    (r-dr/2.0) * dz / dr * 2.0 * dlef* dme / (dlef+dme) +
+                                                                    r*dr / dz * 2.0*dtop*dme/(dtop+dme) +
+                                                                    r*dr / dz * 2.0*dbot*dme/(dbot+dme) +
+                                                                    geommap(r,h).interpSigA(gnum, getvoid)*r*dz*dr )
+
+                    # above term:
+                    if j!=nh-1:
+                        A[coord2enum(i, j, nr), coord2enum(i, j+1, nr)] = -r*dr / dz * 2.0*dtop*dme/(dtop+dme)
+
+                    # below term:
+                    if j!=0:
+                        A[coord2enum(i, j, nr), coord2enum(i, j-1, nr)] = -r*dr / dz * 2.0*dbot*dme/(dbot+dme)
+
+                    # left term:
+                    if i!=0:
+                        A[coord2enum(i, j, nr), coord2enum(i-1, j, nr)] = -(r-dr/2.0) * dz / dr * 2.0 * dlef* dme / (dlef+dme)
+
+                    # right term:
+                    if i!=nr-1:
+                        A[coord2enum(i, j, nr), coord2enum(i+1, j, nr)] = -(r+dr/2.0) * dz / dr * 2.0 * drigh* dme / (drigh+dme)
+
+                    B[coord2enum(i, j, nr)] = geommap(r, h).interpNuSigF(gnum, getvoid) * dr * dz * r
+
+                else:
+                    A[coord2enum(i, j, nr), coord2enum(i, j, nr)] = 1.0
+                    A[coord2enum(i, j, nr), coord2enum(i+1, j, nr)] = -1.0
+
+
+    # enforce some boundary conditions
+    for A, B, gnum in zip(Alist, Blist, range(numgroups)):
+        for i in range(nr):
+            for j in range(nh):
+                if i==0 or j==0 or i==nr-1 or j==nh-1:
+
+                    # or dirichlet zero at reactor edges
+                    B[coord2enum(i, j, nr)] = 0.0
+
+    return Alist, Blist
+
+
 
 def getInscatterFromOtherGroups(fluxvec, gnum, dr, dh, numi, geommap):
     """ OK, so, loop through other flux groups, then calculate your
