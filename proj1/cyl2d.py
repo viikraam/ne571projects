@@ -15,7 +15,7 @@ class Material(object):
     """ base class for materials. Contains methods for computing material properties
     in anticipation of implementing temperature implementation."""
 
-    def __init__(self, tempvec, diffC, sigA, nSigF, gtrans):
+    def __init__(self, void, diffC, sigA, nSigF, gtrans):
         """ initializing a material. This means going
         ahead and forming splines
         
@@ -116,45 +116,42 @@ def makeAMatrix(r, h, nr, nh, numgroups, geommap):
 
                 if r != 0:
 
+                    # diffusion coeffs of neighboring cells
+                    dtop = geommap(r,h+dz/2.0).getDiffC(gnum) # top cell
+                    dbot = geommap(r,h-dz/2.0).getDiffC(gnum) # below cell
+                    dlef = geommap(r-dr/2,h).getDiffC(gnum) # left
+                    drigh = geommap(r+dr/2,h).getDiffC(gnum) # right
+                    dme = geommap(r,h).getDiffC(gnum) # local
+
                     # get on-diagonal term:
-                    A[coord2enum(i, j, nr), coord2enum(i, j, nr)] = (2*geommap(r, h).getDiffC(gnum) / dz**2 +
-                                                                    (r+dr)/(r) * geommap(r, h).getDiffC(gnum) / dr**2 +
-                                                                    geommap(r, h).getDiffC(gnum) / dr**2 +
-                                                                    geommap(r,h).getSigA(gnum) )
+                    # (leakage+absorbtion)
+                    A[coord2enum(i, j, nr), coord2enum(i, j, nr)] = ( (r+dr/2.0) * dz / dr * 2.0 * drigh* dme / (drigh+dme) +
+                                                                    (r-dr/2.0) * dz / dr * 2.0 * dlef* dme / (dlef+dme) +
+                                                                    r*dr / dz * 2.0*dtop*dme/(dtop+dme) +
+                                                                    r*dr / dz * 2.0*dbot*dme/(dbot+dme) +
+                                                                    geommap(r,h).getSigA(gnum)*r*dz*dr )
 
                     # above term:
                     if j!=nh-1:
-                        A[coord2enum(i, j, nr), coord2enum(i, j+1, nr)] = -geommap(r, h).getDiffC(gnum) / dz**2
-                                #(r+dr/2.0) * dz**2)
+                        A[coord2enum(i, j, nr), coord2enum(i, j+1, nr)] = -r*dr / dz * 2.0*dtop*dme/(dtop+dme)
+
                     # below term:
                     if j!=0:
-                        A[coord2enum(i, j, nr), coord2enum(i, j-1, nr)] = -geommap(r, h).getDiffC(gnum) / dz**2
+                        A[coord2enum(i, j, nr), coord2enum(i, j-1, nr)] = -r*dr / dz * 2.0*dbot*dme/(dbot+dme)
 
                     # left term:
                     if i!=0:
-                        A[coord2enum(i, j, nr), coord2enum(i-1, j, nr)] = -geommap(r, h).getDiffC(gnum) / dr**2
+                        A[coord2enum(i, j, nr), coord2enum(i-1, j, nr)] = -(r-dr/2.0) * dz / dr * 2.0 * dlef* dme / (dlef+dme)
 
                     # right term:
                     if i!=nr-1:
-                        A[coord2enum(i, j, nr), coord2enum(i+1, j, nr)] = -(r+dr)/r *geommap(r, h).getDiffC(gnum) / dr**2
+                        A[coord2enum(i, j, nr), coord2enum(i+1, j, nr)] = -(r+dr/2.0) * dz / dr * 2.0 * drigh* dme / (drigh+dme)
 
-                    B[coord2enum(i, j, nr)] = geommap(r, h).getNuSigF(gnum)
+                    B[coord2enum(i, j, nr)] = geommap(r, h).getNuSigF(gnum) * dr * dz * r
 
                 else:
                     A[coord2enum(i, j, nr), coord2enum(i, j, nr)] = 1.0
                     A[coord2enum(i, j, nr), coord2enum(i+1, j, nr)] = -1.0
-                    # # get on-diagonal term:
-                    # A[coord2enum(i, j, nr), coord2enum(i, j, nr)] =(sigA *
-                    #    dr**3 /8. * dz**2 + 2.0 * diffcoeff * dr**3/8.0 +diffcoeff*dr/2.0)
-
-                    # # above term:
-                    # if j!=nh-1:
-                    #     A[coord2enum(i, j, nr), coord2enum(i, j+1, nr)] = 
-                    # # # below term:
-                    # if j!=0:
-                    #     A[coord2enum(i, j, nr), coord2enum(i, j-1, nr)] =
-
-                    # B[coord2enum(i, j, nr)] = nSigF * dz**2 / 8.0
 
 
     # enforce some boundary conditions
@@ -181,7 +178,7 @@ def getInscatterFromOtherGroups(fluxvec, gnum, dr, dh, numi, geommap):
             i,j = enum2coord(ii, numi) # mesh indices
             r = i * dr
             h = j * dh
-            inscat[ii] += geommap(r, h).getGroupTransXS(gnump, gnum) * flxp[ii]
+            inscat[ii] += geommap(r, h).getGroupTransXS(gnump, gnum) * flxp[ii] * dr * dh * r
     return inscat
 
 def fluxVector2Grid(fluxvec, r, h, nr, nh):
